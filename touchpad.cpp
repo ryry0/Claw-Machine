@@ -24,99 +24,48 @@
 #include <Arduino.h>
 #include <PID.h>
 #include <motor.h>
+#include <defs.h> //look here for all define/constant values
 
-#define NUM_SAMPLES 10
-#define CORNER_0 0
-#define CORNER_1 1
-#define CORNER_2 2
-#define CORNER_3 3
-
-//#define PWM_REMOVAL
-#define MOTOR_SCALER -10
-
-#define NUM_MOTORS 4
-#define MOTOR_X 0
-#define MOTOR_X_PWM 4
-#define MOTOR_X_PIN1 40
-#define MOTOR_X_PIN2 41
-
-#define MOTOR_X2 1
-#define MOTOR_X2_PWM 5
-#define MOTOR_X2_PIN1 23
-#define MOTOR_X2_PIN2 22
-
-#define MOTOR_Y 2
-#define MOTOR_Y_PWM 6
-#define MOTOR_Y_PIN1 35
-#define MOTOR_Y_PIN2 34
-
-#define MOTOR_WINCH 3
-#define MOTOR_WINCH_PWM 7
-#define MOTOR_WINCH_PIN1 51
-#define MOTOR_WINCH_PIN2 50
-
-#define CLAW_MOTOR_PIN1 8
-#define CLAW_MOTOR_PIN2 9
-
-#define PWM_MAX 255
-#define PWM_SCALER (255/36.651)
-
-#define TICKS_PER_REVOLUTION 1680
-
-//this is the number of ticks for CTC mode
-#define SAMPLE_RATE 200 //Hz
-#define CTC_MATCH 10000 //*should* run the interrupt at 200Hz
-#define SAMPLE_TIME 0.005
-
-#define PRESCALE_8    0x02
-
-#define KP 0.9 //7 //5
-#define KI 0
-#define KD 4.5
-
-#define ERR_TOLERANCE 1.0
-#define ENC_ERROR 10.0
-
-//PID constants for second motor.
-#define KP2 7 //5
-#define KI2 0
-#define KD2 0.2
-
-
-#define X_MAX 4*1680 //4.4
-#define X_MIN -4*1680
-
-#define Y_MAX 4*1680
-#define Y_MIN -4*1680
-
-//Y motor
-#define ENCODER1_A 6
-#define ENCODER1_B 5
-
-//X motor
-#define ENCODER2_A 3
-#define ENCODER2_B 2
-
+//data structure definitions
+//struct that represents coordinate values
 struct coordinates_t {
   int x;
   int y;
 };
 
-void setup();
-//readkeyboard is for debugging purposes
-void readKeyboard(bool &touchpad_enabled);
-coordinates_t readTouchpad();
+//struct that represents motos limit values
+struct limits_t {
+  int min;
+  int max;
+} motor_limits[NUM_MOTORS];
+
+enum states_t {
+  WAIT_FOR_START,
+  INIT,
+  PLAY,
+  RETRIEVE_PRIZE,
+  RETURN_HOME,
+  DEBUG
+};
 
 //global variables
 motor motors[NUM_MOTORS]; //motor structs
 pid_data motor_pid[NUM_MOTORS]; //pid structs
 volatile int encoder_counts[NUM_MOTORS]; //separate encoder structs
+states_t game_state = WAIT_FOR_START;
 
-//port B interrupt vector
+//function prototypes
+#include <kbd_debug.h>
+void setup();
+coordinates_t readTouchpad();
+bool readClawButton();
+void readDirectionButtons();
+
+//port B interrupt vector used to read all encoder lines
 ISR(PCINT2_vect) {
   static const int8_t rot_states[] = //lookup table of rotation states
   {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
-  static uint8_t AB[2] = {0x03, 0x03};
+  static uint8_t AB[NUM_MOTORS] = {0x03, 0x03, 0x03, 0x03};
   uint8_t t = PINK;  // read port status
 
   for (int i = 0; i < NUM_MOTORS; ++i) {
@@ -125,20 +74,22 @@ ISR(PCINT2_vect) {
     AB[i] |= (t >> 2*i) & 0x03;     // add current state
     encoder_counts[i] += rot_states[AB[i] & 0x0f];
   }
-}
+} //end ISR(PCINT2_vect)
 
 //Timer interrupt
-ISR(TIMER1_COMPA_vect) {
+ISR(TIMER1_COMPA_vect) { //computes the PID for each motors @200Hz
   float current_error = 0;
   for (int i = 0; i < NUM_MOTORS; ++i) { //for num motors
     motors[i].encoder_value = encoder_counts[i]; //set motor encoder count
 
-    //ensure position commanded is within bounds
     motors[i].command_position += motors[i].command_velocity * SAMPLE_TIME;
-    /*
-    motors[i].command_position = constrain (motors[i].command_position, X_MIN,
-        X_MAX);
-        */
+
+    //ensure position commanded is within bounds in every mode except debug
+    if (game_state != DEBUG) {
+      motors[i].command_position = constrain (motors[i].command_position,
+          motor_limits[i].min,
+          motor_limits[i].max);
+    }
 
     current_error = motors[i].command_position - motors[i].encoder_value;  //calc err
     fixedUpdatePID(motor_pid[i], current_error); //update PID
@@ -163,35 +114,164 @@ ISR(TIMER1_COMPA_vect) {
   }
 }
 
+//MAIN FUNCTION///////////////////
 int main () {
   bool touchpad_enabled = false;
+  char incoming_byte;
+  coordinates_t gantry_coordinates;
 
   init();
   setup();
 
-  while (1) {
-    readKeyboard(touchpad_enabled);
-/*
-    if (touchpad_enabled) {
-      motors[MOTOR_X].command_position = MOTOR_SCALER * xout;
-      motors[MOTOR_X2].command_position = MOTOR_SCALER * yout;
-    }
-*/
+  while (1) { //main loop
+    switch(game_state) { //game state machine
+      case WAIT_FOR_START: //wait for the start button to be pressed
+        analogWrite(CLAW_MOTOR_PIN1,  0);
+        analogWrite(CLAW_MOTOR_PIN2, 0);
 
-    Serial.print("x: ");
-    Serial.print(encoder_counts[MOTOR_X]);
+        if (Serial.available()) { //check keyboard for init
+          incoming_byte = Serial.read();
+          if (incoming_byte == ' ')
+            game_state = INIT;
+        }
 
-    Serial.print(" x2: ");
-    Serial.print(encoder_counts[MOTOR_X2]);
+        //read claw button and spin till person releases
+        while (readClawButton())
+          game_state = INIT;
 
-    Serial.print(" y: ");
-    Serial.print(encoder_counts[MOTOR_Y]);
+        break; //end WAIT_FOR_START
 
-    Serial.print(" w: ");
-    Serial.print(encoder_counts[MOTOR_WINCH]);
-    Serial.print("\n");
-  }
-}
+      case INIT: //zero out everything
+        for (int i = 0; i < NUM_MOTORS; ++i)
+          motors[i].command_velocity = 0;
+
+        game_state = PLAY;
+        break; //end INIT
+
+      case PLAY: //take input from touchpad and keyboard
+        if (touchpad_enabled) {
+          gantry_coordinates = readTouchpad();
+          //motors[MOTOR_X].command_position = MOTOR_SCALER * xout;
+          //motors[MOTOR_X2].command_position = MOTOR_SCALER * yout;
+        }
+
+        readKeyboardInput();
+        readDirectionButtons();
+
+        if (readClawButton())
+          game_state = RETRIEVE_PRIZE;
+
+        Serial.print("x vel: ");
+        Serial.print(motors[MOTOR_X].command_velocity, 4);
+        Serial.print("\n");
+        break; //end PLAY
+
+      case RETRIEVE_PRIZE:
+        //stop x and y movement
+        for (int i = 0; i < 3; ++i) {
+          motors[i].command_velocity = 0;
+        }
+
+        //open the claw
+        analogWrite(CLAW_MOTOR_PIN1,  0);
+        analogWrite(CLAW_MOTOR_PIN2, 255);
+
+        motors[MOTOR_WINCH].command_velocity = 3200;
+
+        //spin and wait till we get to bottom
+        while( (abs(encoder_counts[MOTOR_WINCH] - WINCH_MAX) > 100) );
+
+        //close the claw
+        analogWrite(CLAW_MOTOR_PIN1,  255);
+        analogWrite(CLAW_MOTOR_PIN2, 0);
+
+        motors[MOTOR_WINCH].command_velocity = -3200;
+
+
+        //go over hole
+        motors[MOTOR_X].command_velocity = 800;
+        motors[MOTOR_X2].command_velocity = 800;
+        motors[MOTOR_Y].command_velocity = -1600;
+
+        //spin till we get attain x and y coords, and the reel is up
+        //stays in while loop until we're about 100 enc ticks away
+
+        //while ( x and x2 != xmax or y != y_max or winch != winch_min)
+        while( ((abs(encoder_counts[MOTOR_X] < SQUARE_X))  &&
+            (abs(encoder_counts[MOTOR_X2]    < SQUARE_X))) ||
+            (abs(encoder_counts[MOTOR_Y]     > SQUARE_Y))  ||
+            (abs(encoder_counts[MOTOR_WINCH] > WINCH_END)) ) {
+
+          //shut off x motors when needed
+          if ((abs(encoder_counts[MOTOR_X] > SQUARE_X)) &&
+              (abs(encoder_counts[MOTOR_X2]  > SQUARE_X))) {
+            motors[MOTOR_X].command_velocity = 0;
+            motors[MOTOR_X2].command_velocity = 0;
+          }
+
+          if (abs(encoder_counts[MOTOR_Y] < SQUARE_Y)) {
+            motors[MOTOR_Y].command_velocity = 0;
+          }
+
+          if (abs(encoder_counts[MOTOR_WINCH] < WINCH_END)) {
+            motors[MOTOR_WINCH].command_velocity = 0;
+          }
+        } //end while spin
+
+        //open the claw
+        analogWrite(CLAW_MOTOR_PIN1,  0);
+        analogWrite(CLAW_MOTOR_PIN2, 255);
+
+        game_state = RETURN_HOME;
+        break; //end RETRIEVE_PRIZE
+
+      case RETURN_HOME: //goes back to back left
+        motors[MOTOR_X].command_velocity = -800;
+        motors[MOTOR_X2].command_velocity = -800;
+
+        motors[MOTOR_Y].command_velocity = -1600;
+
+        while(abs(encoder_counts[MOTOR_X] > X_MIN + POS_TOLERANCE));
+
+        while(abs(encoder_counts[MOTOR_Y] > Y_MIN + POS_TOLERANCE));
+
+        //set everything to zero
+        analogWrite(CLAW_MOTOR_PIN1,  0);
+        analogWrite(CLAW_MOTOR_PIN2, 0);
+        for (int i = 0; i < NUM_MOTORS; ++i) {
+          motors[i].command_velocity = 0;
+          motors[i].command_position = encoder_counts[i];
+        }
+        game_state = WAIT_FOR_START;
+        break; //end RETURN_HOME
+
+      case DEBUG: //for debugging purposes, removes software limiters
+        readKeyboardDebug(touchpad_enabled);
+        Serial.print("x: ");
+        Serial.print(encoder_counts[MOTOR_X]);
+
+        Serial.print(" x2: ");
+        Serial.print(encoder_counts[MOTOR_X2]);
+
+        Serial.print(" y: ");
+        Serial.print(encoder_counts[MOTOR_Y]);
+
+        Serial.print(" w: ");
+        Serial.print(encoder_counts[MOTOR_WINCH]);
+        Serial.print("\n");
+        break; // END DEBUG
+
+      default:
+        break;
+    } //end switch
+    //silence motors
+    for (int i = 0; i < NUM_MOTORS; ++i) {
+      if (motors[i].command_velocity == 0) {
+        motors[i].command_position = encoder_counts[i];
+      }
+    } //end for
+  } //end while
+} //end main
 
 void setup() {
   noInterrupts();
@@ -201,53 +281,37 @@ void setup() {
   motors[MOTOR_X].pwm_pin = MOTOR_X_PWM;
   motors[MOTOR_X].directionb = MOTOR_X_PIN1;
   motors[MOTOR_X].directiona = MOTOR_X_PIN2;
-
-  pinMode(motors[MOTOR_X].pwm_pin, OUTPUT);
-  pinMode(motors[MOTOR_X].directionb, OUTPUT);
-  pinMode(motors[MOTOR_X].directiona, OUTPUT);
-
-  motors[MOTOR_X].command_position = 0;
-
-  setPIDConstants(motor_pid[MOTOR_X], KP, KI, KD, 1000);
+  motor_limits[MOTOR_X].min = X_MIN;
+  motor_limits[MOTOR_X].max = X_MAX;
 
   //motor2
   motors[MOTOR_X2].pwm_pin = MOTOR_X2_PWM;
   motors[MOTOR_X2].directionb = MOTOR_X2_PIN1;
   motors[MOTOR_X2].directiona = MOTOR_X2_PIN2;
-
-  pinMode(motors[MOTOR_X2].pwm_pin, OUTPUT);
-  pinMode(motors[MOTOR_X2].directionb, OUTPUT);
-  pinMode(motors[MOTOR_X2].directiona, OUTPUT);
-
-  motors[MOTOR_X2].command_position = 0;
-
-  setPIDConstants(motor_pid[MOTOR_X2], KP, KI, KD, 1000);
+  motor_limits[MOTOR_X2].min = X_MIN;
+  motor_limits[MOTOR_X2].max = X_MAX;
 
   //motor3
   motors[MOTOR_Y].pwm_pin = MOTOR_Y_PWM;
   motors[MOTOR_Y].directionb = MOTOR_Y_PIN1;
   motors[MOTOR_Y].directiona = MOTOR_Y_PIN2;
-
-  pinMode(motors[MOTOR_Y].pwm_pin, OUTPUT);
-  pinMode(motors[MOTOR_Y].directionb, OUTPUT);
-  pinMode(motors[MOTOR_Y].directiona, OUTPUT);
-
-  motors[MOTOR_Y].command_position = 0;
-
-  setPIDConstants(motor_pid[MOTOR_Y], KP, KI, KD, 1000);
+  motor_limits[MOTOR_Y].min = Y_MIN;
+  motor_limits[MOTOR_Y].max = Y_MAX;
 
   //motor4
   motors[MOTOR_WINCH].pwm_pin = MOTOR_WINCH_PWM;
   motors[MOTOR_WINCH].directionb = MOTOR_WINCH_PIN1;
   motors[MOTOR_WINCH].directiona = MOTOR_WINCH_PIN2;
+  motor_limits[MOTOR_WINCH].min = WINCH_MIN;
+  motor_limits[MOTOR_WINCH].max = WINCH_MAX;
 
-  pinMode(motors[MOTOR_WINCH].pwm_pin, OUTPUT);
-  pinMode(motors[MOTOR_WINCH].directionb, OUTPUT);
-  pinMode(motors[MOTOR_WINCH].directiona, OUTPUT);
-
-  motors[MOTOR_WINCH].command_position = 0;
-
-  setPIDConstants(motor_pid[MOTOR_WINCH], KP, KI, KD, 1000);
+  for (int i = 0; i < NUM_MOTORS; ++i) {
+    pinMode(motors[i].pwm_pin, OUTPUT);
+    pinMode(motors[i].directionb, OUTPUT);
+    pinMode(motors[i].directiona, OUTPUT);
+    motors[i].command_position = 0;
+    setPIDConstants(motor_pid[i], KP, KI, KD, 1000);
+  }
 
   //claw pin
   pinMode(CLAW_MOTOR_PIN1, OUTPUT);
@@ -273,114 +337,23 @@ void setup() {
     _BV(PORTK4) | _BV(PORTK3) | _BV(PORTK2) |
     _BV(PORTK1) | _BV(PORTK0);
 
-
   // enable button pin change interrupt
-  PCMSK2 = _BV(PCINT16) | _BV(PCINT17) | _BV(PCINT18) | _BV(PCINT19) | _BV(PCINT20)
-    | _BV(PCINT21) | _BV(PCINT22) | _BV(PCINT23);
+  PCMSK2 = _BV(PCINT16) | _BV(PCINT17) | _BV(PCINT18) | _BV(PCINT19) |
+    _BV(PCINT20) | _BV(PCINT21) | _BV(PCINT22) | _BV(PCINT23);
   PCICR = _BV(PCIE2);  // F-port interrupt enable
+
+  //setup directional buttons
+  DDRD &= 0xF0; //set as input
+  PORTD |= 0x0F;//set internal pullup resistors
+
+  //setup start/claw button
+  DDRH &= 0xFE; //set as input
+  PORTH |= 0x01; //set internal pullup resistor
 
   interrupts();
 }
 
-void readKeyboard(bool &touchpad_enabled) {
-  char incoming_byte;
-  if (Serial.available()) {
-    incoming_byte = Serial.read();
-    switch(incoming_byte) {
-      case 'w':
-        motors[MOTOR_X].command_position += 200;
-        break;
-
-      case 's':
-        motors[MOTOR_X].command_position -= 200;
-        break;
-
-      case 'a':
-        motors[MOTOR_X2].command_position -= 200;
-        break;
-
-      case 'q':
-        motors[MOTOR_X2].command_position += 200;
-        break;
-
-      case 'y':
-        motors[MOTOR_X].command_velocity += 200;
-        motors[MOTOR_X2].command_velocity += 200;
-        break;
-
-      case 'h':
-        motors[MOTOR_X].command_velocity += 200;
-        motors[MOTOR_X2].command_velocity += 200;
-        break;
-
-      case 'i':
-        motors[MOTOR_X].command_velocity += 800;
-        motors[MOTOR_X2].command_velocity += 800;
-        break;
-
-      case 'k':
-        motors[MOTOR_X].command_velocity -= 800;
-        motors[MOTOR_X2].command_velocity -= 800;
-        break;
-
-      case 'l':
-        motors[MOTOR_Y].command_velocity -= 800;
-        break;
-
-      case 'j':
-        motors[MOTOR_Y].command_velocity += 800;
-        break;
-
-      case '>':
-        motors[MOTOR_Y].command_position -= 200;
-        break;
-
-      case '<':
-        motors[MOTOR_Y].command_position += 200;
-        break;
-
-      case 'D':
-        motors[MOTOR_WINCH].command_velocity += 3200;
-        break;
-
-      case 'U':
-        motors[MOTOR_WINCH].command_velocity -= 3200;
-        break;
-
-      case 'C':
-        analogWrite(CLAW_MOTOR_PIN1, 255);
-        analogWrite(CLAW_MOTOR_PIN2,  0);
-        break;
-
-      case 'O':
-        analogWrite(CLAW_MOTOR_PIN2, 255);
-        analogWrite(CLAW_MOTOR_PIN1,  0);
-        break;
-
-      case ' ':
-        for (int i = 0; i < NUM_MOTORS; ++i) {
-          motors[i].command_position = 0;
-          motors[i].command_velocity = 0;
-          encoder_counts[i] = 0;
-        }
-        break;
-
-      case '.':
-        for (int i = 0; i < NUM_MOTORS; ++i) {
-          motors[i].command_position = encoder_counts[i];
-          motors[i].command_velocity = 0;
-        }
-        break;
-
-      case 't':
-        analogWrite(CLAW_MOTOR_PIN2, 0);
-        analogWrite(CLAW_MOTOR_PIN1, 0);
-        touchpad_enabled = !touchpad_enabled;
-        break;
-    }
-  }
-}
-
+//this function reads the touchpad.
 coordinates_t readTouchpad() {
   static int moving_average_index = 0;
   int a, b, c, d, x, y, xout = 0, yout = 0;// prev_x, prev_y;
@@ -400,8 +373,6 @@ coordinates_t readTouchpad() {
   //do the y magic
   y = b + a - c - d;
 
-  //(the above formulas are derived from the properties of MY piece of paper + graphite and probably won't work well with any other)
-
   //moving average to smooth mouse motion
   xbuffer[moving_average_index % NUM_SAMPLES] = x;
   ybuffer[moving_average_index++ % NUM_SAMPLES] = y;
@@ -413,7 +384,50 @@ coordinates_t readTouchpad() {
 
   xout /= NUM_SAMPLES;
   yout /= NUM_SAMPLES;
+
   //end of smoothing
   gantry_coords.x = xout;
   gantry_coords.y = yout;
+
+  return gantry_coords;
+} //end readTouchpad
+
+//reads the button that begins the game/indicates prize retrieval
+bool readClawButton() {
+  static float temp = 0;
+  float next_val = 0;
+
+  if ((PINH & 0x01) == 0x00) //pin is pressed
+#ifdef DEBOUNCE_BUTTON
+    next_val = 10;
+  //software exponential moving avg (lowpass) filter
+  temp = DEBOUNCE_CONSTANT*next_val + (1 - DEBOUNCE_CONSTANT)*temp;
+  if (temp > 5.0)
+#endif
+    return true;
+
+  return false;
+}
+
+//reads the buttons that control the direction
+void readDirectionButtons() {
+  if ((PIND & 0x01) == 0x00) //left is pressed
+    motors[MOTOR_Y].command_velocity = MAX_Y_SPEED;
+  else if ((PIND & 0x02) == 0x00) //right is pressed
+    motors[MOTOR_Y].command_velocity = -MAX_Y_SPEED;
+  else
+    motors[MOTOR_Y].command_velocity = 0;
+
+  if ((PIND & 0x04) == 0x00) {//up is pressed
+    motors[MOTOR_X].command_velocity = MAX_X_SPEED;
+    motors[MOTOR_X2].command_velocity = MAX_X_SPEED;
+  }
+  else if ((PIND & 0x08) == 0x00) {//down is pressed
+    motors[MOTOR_X].command_velocity = -MAX_X_SPEED;
+    motors[MOTOR_X2].command_velocity = -MAX_X_SPEED;
+  }
+  else {
+    motors[MOTOR_X].command_velocity =0;
+    motors[MOTOR_X2].command_velocity = 0;
+  }
 }
