@@ -1,8 +1,4 @@
 /*
- * The motor gear ratio is 30
- * The encoder resolution is 64
- * That makes 1920 ticks per shaft rev.
- *
  * The timer interrupt uses the following formula
  * (16M/prescaler)/(desired frequency) = number of counts for CTC mode.
  * (16M/8)/(200) = CTC_MATCH = 10000
@@ -29,8 +25,8 @@
 //data structure definitions
 //struct that represents coordinate values
 struct coordinates_t {
-  int x;
-  int y;
+  float x;
+  float y;
 };
 
 //struct that represents motos limit values
@@ -39,6 +35,7 @@ struct limits_t {
   int max;
 } motor_limits[NUM_MOTORS];
 
+//states for the state machine
 enum states_t {
   WAIT_FOR_START,
   INIT,
@@ -58,18 +55,24 @@ states_t game_state = WAIT_FOR_START;
 #include <kbd_debug.h>
 void setup();
 coordinates_t readTouchpad();
-bool readClawButton();
 void readDirectionButtons();
+
+bool readClawButton();
+void openClaw();
+void closeClaw();
+
+void lightGreenLED();
+void lightRedLED();
 
 //port B interrupt vector used to read all encoder lines
 ISR(PCINT2_vect) {
   static const int8_t rot_states[] = //lookup table of rotation states
   {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
-  static uint8_t AB[NUM_MOTORS] = {0x03, 0x03, 0x03, 0x03};
+  static uint8_t AB[NUM_MOTORS] = {0x03, 0x03, 0x03, 0x03}; //encoder states
   uint8_t t = PINK;  // read port status
 
   for (int i = 0; i < NUM_MOTORS; ++i) {
-    // check for rotary state change button1
+    // check for rotary state change
     AB[i] <<= 2;                  // save previous state
     AB[i] |= (t >> 2*i) & 0x03;     // add current state
     encoder_counts[i] += rot_states[AB[i] & 0x0f];
@@ -85,13 +88,20 @@ ISR(TIMER1_COMPA_vect) { //computes the PID for each motors @200Hz
     motors[i].command_position += motors[i].command_velocity * SAMPLE_TIME;
 
     //ensure position commanded is within bounds in every mode except debug
-    if (game_state != DEBUG) {
-      motors[i].command_position = constrain (motors[i].command_position,
-          motor_limits[i].min,
-          motor_limits[i].max);
+    //check which game state we're in
+    switch(game_state) {
+      case DEBUG: //remove limiters on debug
+        break;
+
+      default:
+        motors[i].command_position = constrain (motors[i].command_position,
+            motor_limits[i].min,
+            motor_limits[i].max);
+        break;
     }
 
-    current_error = motors[i].command_position - motors[i].encoder_value;  //calc err
+    //calc err
+    current_error = motors[i].command_position - motors[i].encoder_value;
     fixedUpdatePID(motor_pid[i], current_error); //update PID
 
     //constrain pwm from 0 to 255
@@ -119,6 +129,19 @@ int main () {
   bool touchpad_enabled = false;
   char incoming_byte;
   coordinates_t gantry_coordinates;
+  coordinates_t prev_coordinates; //prev coordinates for computing velocity
+
+  gantry_coordinates.x = 0;
+  gantry_coordinates.y = 0;
+  prev_coordinates.x = 0;
+  prev_coordinates.y = 0;
+
+  float x_vel = 0, y_vel = 0;
+
+  //variables for filtering touchpad velocity commands
+#ifdef FILTER_VELOCITY
+  float filtered_x_vel = 0, filtered_y_vel = 0;
+#endif
 
   init();
   setup();
@@ -126,8 +149,10 @@ int main () {
   while (1) { //main loop
     switch(game_state) { //game state machine
       case WAIT_FOR_START: //wait for the start button to be pressed
-        analogWrite(CLAW_MOTOR_PIN1,  0);
+        analogWrite(CLAW_MOTOR_PIN1,  0); //relax the claw
         analogWrite(CLAW_MOTOR_PIN2, 0);
+
+        lightRedLED();
 
         if (Serial.available()) { //check keyboard for init
           incoming_byte = Serial.read();
@@ -141,31 +166,72 @@ int main () {
 
         break; //end WAIT_FOR_START
 
-      case INIT: //zero out everything
+      case INIT: //zero out velocites
         for (int i = 0; i < NUM_MOTORS; ++i)
           motors[i].command_velocity = 0;
 
+        lightGreenLED();
         game_state = PLAY;
         break; //end INIT
 
-      case PLAY: //take input from touchpad and keyboard
+        ///////PLAY///////////////////////////////
+      case PLAY: //take input from touchpad or buttons
         if (touchpad_enabled) {
-          gantry_coordinates = readTouchpad();
-          //motors[MOTOR_X].command_position = MOTOR_SCALER * xout;
-          //motors[MOTOR_X2].command_position = MOTOR_SCALER * yout;
+
+          if (analogRead(STYLUS_PIN) > 0) { //check if stylus is touching
+            gantry_coordinates = readTouchpad();
+
+            //command velocity is proportional to pen velocity.
+            x_vel = constrain(X_VEL_SCALER *
+                (gantry_coordinates.x - prev_coordinates.x), -MAX_X_SPEED,
+                MAX_X_SPEED);
+
+            y_vel = constrain(Y_VEL_SCALER *
+                (gantry_coordinates.y - prev_coordinates.y), -MAX_Y_SPEED,
+                MAX_Y_SPEED);
+
+            //assign the velocities
+            motors[MOTOR_X2].command_velocity =
+              motors[MOTOR_X].command_velocity =
+#ifdef FILTER_VELOCITY //switch to filter the velocity or not
+              VEL_FILTER_CONSTANT*x_vel +
+              (1-VEL_FILTER_CONSTANT) * motors[MOTOR_X].command_velocity;
+#else
+            x_vel;
+#endif
+            motors[MOTOR_Y].command_velocity =
+#ifdef FILTER_VELOCITY
+              VEL_FILTER_CONSTANT*y_vel +
+              (1-VEL_FILTER_CONSTANT) * motors[MOTOR_Y].command_velocity;
+#else
+            y_vel;
+#endif
+
+            //remember prev state
+            prev_coordinates = gantry_coordinates;
+          } //end if (analogRead(STYLUS_PIN) > 0)
+
+          else {
+            for (int i = 0; i < NUM_MOTORS; ++i) {
+              motors[i].command_velocity = 0;
+            }
+          } //end else (analogRead(STYLUS_PIN) > 0)
+
+        } //end if (touchpad_enabled)
+        else {
+          readDirectionButtons();
         }
 
         readKeyboardInput();
-        readDirectionButtons();
+        Serial.print(encoder_counts[MOTOR_WINCH]); //debug info
+        Serial.print("\n");
 
         if (readClawButton())
           game_state = RETRIEVE_PRIZE;
 
-        Serial.print("x vel: ");
-        Serial.print(motors[MOTOR_X].command_velocity, 4);
-        Serial.print("\n");
         break; //end PLAY
 
+        /////////////RETRIEVE_PRIZE/////////////////
       case RETRIEVE_PRIZE:
         //stop x and y movement
         for (int i = 0; i < 3; ++i) {
@@ -173,19 +239,17 @@ int main () {
         }
 
         //open the claw
-        analogWrite(CLAW_MOTOR_PIN1,  0);
-        analogWrite(CLAW_MOTOR_PIN2, 255);
+        openClaw();
 
-        motors[MOTOR_WINCH].command_velocity = 3200;
+        motors[MOTOR_WINCH].command_velocity = 3200; //drop claw
 
         //spin and wait till we get to bottom
         while( (abs(encoder_counts[MOTOR_WINCH] - WINCH_MAX) > 100) );
 
         //close the claw
-        analogWrite(CLAW_MOTOR_PIN1,  255);
-        analogWrite(CLAW_MOTOR_PIN2, 0);
+        closeClaw();
 
-        motors[MOTOR_WINCH].command_velocity = -3200;
+        motors[MOTOR_WINCH].command_velocity = -3200; //reel claw
 
 
         //go over hole
@@ -197,43 +261,70 @@ int main () {
         //stays in while loop until we're about 100 enc ticks away
 
         //while ( x and x2 != xmax or y != y_max or winch != winch_min)
-        while( ((abs(encoder_counts[MOTOR_X] < SQUARE_X))  &&
-            (abs(encoder_counts[MOTOR_X2]    < SQUARE_X))) ||
-            (abs(encoder_counts[MOTOR_Y]     > SQUARE_Y))  ||
-            (abs(encoder_counts[MOTOR_WINCH] > WINCH_END)) ) {
+        while( ((encoder_counts[MOTOR_X] < SQUARE_X)  &&
+              (encoder_counts[MOTOR_X2]    < SQUARE_X)) ||
+            (encoder_counts[MOTOR_Y]     > SQUARE_Y)  ||
+            (encoder_counts[MOTOR_WINCH] > WINCH_END) ) {
 
-          //shut off x motors when needed
-          if ((abs(encoder_counts[MOTOR_X] > SQUARE_X)) &&
-              (abs(encoder_counts[MOTOR_X2]  > SQUARE_X))) {
+          //shut off the motors when needed
+          if ((encoder_counts[MOTOR_X] > SQUARE_X) &&
+              (encoder_counts[MOTOR_X2]  > SQUARE_X)) {
             motors[MOTOR_X].command_velocity = 0;
             motors[MOTOR_X2].command_velocity = 0;
           }
 
-          if (abs(encoder_counts[MOTOR_Y] < SQUARE_Y)) {
+          if (encoder_counts[MOTOR_Y] < SQUARE_Y) {
             motors[MOTOR_Y].command_velocity = 0;
           }
 
-          if (abs(encoder_counts[MOTOR_WINCH] < WINCH_END)) {
+          if (encoder_counts[MOTOR_WINCH] < WINCH_END) {
             motors[MOTOR_WINCH].command_velocity = 0;
           }
+
+          for (int i = 0; i < NUM_MOTORS; ++i) {
+            Serial.print(encoder_counts[i]);
+            Serial.print(" ");
+          }
+
+          Serial.print("\n");
         } //end while spin
 
         //open the claw
-        analogWrite(CLAW_MOTOR_PIN1,  0);
-        analogWrite(CLAW_MOTOR_PIN2, 255);
+        openClaw();
 
         game_state = RETURN_HOME;
         break; //end RETRIEVE_PRIZE
 
+        /////////RETURN HOME/////////////////////
       case RETURN_HOME: //goes back to back left
-        motors[MOTOR_X].command_velocity = -800;
-        motors[MOTOR_X2].command_velocity = -800;
+        //command motors to return to 0,0
+        motors[MOTOR_X].command_velocity = -MAX_X_SPEED/2;
+        motors[MOTOR_X2].command_velocity = -MAX_X_SPEED/2;
 
-        motors[MOTOR_Y].command_velocity = -1600;
+        motors[MOTOR_Y].command_velocity = -MAX_Y_SPEED;
 
-        while(abs(encoder_counts[MOTOR_X] > X_MIN + POS_TOLERANCE));
+        //spin till we get there
+        //while ( x and x2 > x_min or y > y_min )
+        while((encoder_counts[MOTOR_X] > X_MIN + POS_TOLERANCE) ||
+              (encoder_counts[MOTOR_Y] > Y_MIN + POS_TOLERANCE)) {
 
-        while(abs(encoder_counts[MOTOR_Y] > Y_MIN + POS_TOLERANCE));
+          //shut off motors when needed
+          if(!(encoder_counts[MOTOR_X] > X_MIN + POS_TOLERANCE)) {
+            motors[MOTOR_X].command_velocity = 0;
+            motors[MOTOR_X2].command_velocity = 0;
+          }
+
+          if(!(encoder_counts[MOTOR_Y] > Y_MIN + POS_TOLERANCE)) {
+            motors[MOTOR_Y].command_velocity = 0;
+          }
+
+          //debug information
+          for (int i = 0; i < NUM_MOTORS; ++i) {
+            Serial.print(encoder_counts[i]);
+            Serial.print(" ");
+          }
+          Serial.print("\n");
+        }
 
         //set everything to zero
         analogWrite(CLAW_MOTOR_PIN1,  0);
@@ -245,31 +336,34 @@ int main () {
         game_state = WAIT_FOR_START;
         break; //end RETURN_HOME
 
+        //////////DEBUG/////////////////////////////
       case DEBUG: //for debugging purposes, removes software limiters
         readKeyboardDebug(touchpad_enabled);
+        gantry_coordinates = readTouchpad();
+
+        if (analogRead(STYLUS_PIN) > 0)
+          Serial.print("Contact ");
+        else
+          Serial.print("No Contact ");
+
         Serial.print("x: ");
-        Serial.print(encoder_counts[MOTOR_X]);
-
-        Serial.print(" x2: ");
-        Serial.print(encoder_counts[MOTOR_X2]);
-
+        Serial.print(gantry_coordinates.x);
         Serial.print(" y: ");
-        Serial.print(encoder_counts[MOTOR_Y]);
-
-        Serial.print(" w: ");
-        Serial.print(encoder_counts[MOTOR_WINCH]);
+        Serial.print(gantry_coordinates.y);
         Serial.print("\n");
         break; // END DEBUG
 
       default:
         break;
     } //end switch
+
     //silence motors
     for (int i = 0; i < NUM_MOTORS; ++i) {
       if (motors[i].command_velocity == 0) {
         motors[i].command_position = encoder_counts[i];
       }
     } //end for
+
   } //end while
 } //end main
 
@@ -305,6 +399,7 @@ void setup() {
   motor_limits[MOTOR_WINCH].min = WINCH_MIN;
   motor_limits[MOTOR_WINCH].max = WINCH_MAX;
 
+  //set all the pins to outputs, and set PID things
   for (int i = 0; i < NUM_MOTORS; ++i) {
     pinMode(motors[i].pwm_pin, OUTPUT);
     pinMode(motors[i].directionb, OUTPUT);
@@ -350,6 +445,9 @@ void setup() {
   DDRH &= 0xFE; //set as input
   PORTH |= 0x01; //set internal pullup resistor
 
+  //setup LED Pins
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
   interrupts();
 }
 
@@ -373,7 +471,7 @@ coordinates_t readTouchpad() {
   //do the y magic
   y = b + a - c - d;
 
-  //moving average to smooth mouse motion
+  //FIR moving average to smooth motion
   xbuffer[moving_average_index % NUM_SAMPLES] = x;
   ybuffer[moving_average_index++ % NUM_SAMPLES] = y;
 
@@ -430,4 +528,28 @@ void readDirectionButtons() {
     motors[MOTOR_X].command_velocity =0;
     motors[MOTOR_X2].command_velocity = 0;
   }
+}
+
+//sets Green LED port high and red low
+void lightGreenLED() {
+  digitalWrite(GREEN_LED, HIGH);
+  digitalWrite(RED_LED, LOW);
+}
+
+//opposite of above
+void lightRedLED() {
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, HIGH);
+}
+
+//writes a PWM to one of the claw input lines
+void openClaw() {
+  analogWrite(CLAW_MOTOR_PIN1,  0);
+  analogWrite(CLAW_MOTOR_PIN2, 255);
+}
+
+//writes a PWM to the opposite line as above
+void closeClaw() {
+  analogWrite(CLAW_MOTOR_PIN1,  255);
+  analogWrite(CLAW_MOTOR_PIN2, 0);
 }

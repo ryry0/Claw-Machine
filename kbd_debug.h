@@ -100,9 +100,12 @@ void readKeyboardDebug(bool &touchpad_enabled) {
         break;
 
       case 't':
+        touchpad_enabled = !touchpad_enabled;
+        break;
+
+      case 'T':
         analogWrite(CLAW_MOTOR_PIN2, 0);
         analogWrite(CLAW_MOTOR_PIN1, 0);
-        touchpad_enabled = !touchpad_enabled;
         break;
     } //end switch
   } //end if

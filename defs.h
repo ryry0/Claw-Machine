@@ -3,13 +3,21 @@
 #define DEFS_H_
 
 //analog pins used for corners
-#define CORNER_0 9
-#define CORNER_1 10
-#define CORNER_2 11
-#define CORNER_3 12
+#define CORNER_0 0
+#define CORNER_1 1
+#define CORNER_2 2
+#define CORNER_3 3
+#define STYLUS_PIN 4
+
+#define TOUCH_TOP -100
+#define TOUCH_BOTTOM 50
+#define TOUCH_LEFT 100
+#define TOUCH_RIGHT -50
 
 //#define PWM_REMOVAL
-#define MOTOR_SCALER -10
+#define MOTOR_SCALER -100
+#define X_VEL_SCALER 600
+#define Y_VEL_SCALER -100000
 
 #define NUM_MOTORS 4
 #define MOTOR_X 0
@@ -67,14 +75,24 @@
 #define WINCH_MIN 0
 #define WINCH_MAX 20000
 
-#define POS_TOLERANCE 100 //position tolerance "must be within 100 ticks of x"
+#define POS_TOLERANCE 300 //position tolerance "must be within 100 ticks of x"
 #define SQUARE_X 7000 //x position of square
 #define SQUARE_Y 200 //Y position of square
 #define WINCH_END 2000
 
+#define NUM_SAMPLES 5 //number of samples for touchpad moving avg
+
+#define FILTER_VELOCITY
+#define VELOCITY_SAMPLES 10
+const float VEL_FILTER_CONSTANT = 1/float(VELOCITY_SAMPLES);
+
 #define DEBOUNCE_BUTTON //enable software filtering of button
 
-#define NUM_SAMPLES 10
+#define DEBOUNCE_SAMPLES 50
 //constants for software debouncing
-const float DEBOUNCE_CONSTANT = 1/float(NUM_SAMPLES);
+const float DEBOUNCE_CONSTANT = 1/float(DEBOUNCE_SAMPLES);
+
+#define GREEN_LED 30
+#define RED_LED 31
+
 #endif

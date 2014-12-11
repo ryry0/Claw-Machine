@@ -10,10 +10,10 @@ struct motor {
   char  directiona;       //pin that makes the motor turn cw when it is high.
   char  directionb;       //pin that makes motor turn ccw when it is high.
   long  encoder_value;
-  float command_velocity; //specified in rad/s
-  float current_velocity; //specified in rad/s
-  float command_position; //specified in rad
-  float current_position; //specified in rad
+  float command_velocity; //specified in ticks/s
+  float current_velocity; //specified in ticks/s
+  float command_position; //specified in ticks
+  float current_position; //specified in ticks
 };
 
 //This function uses the motor properties to determine if the motor will turn
