@@ -51,7 +51,7 @@ enum states_t {
 //global variables
 motor motors[NUM_MOTORS]; //motor structs
 pid_data motor_pid[NUM_MOTORS]; //pid structs
-volatile int encoder_counts[NUM_MOTORS]; //separate encoder structs
+volatile long encoder_counts[NUM_MOTORS]; //separate encoder structs
 states_t game_state = WAIT_FOR_START;
 
 //function prototypes
