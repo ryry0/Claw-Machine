@@ -1,4 +1,7 @@
 /*
+ * This is the main file for the program. It contains the PID calculation,
+ * input detection and interpretation, and the game state machine.
+ *
  * The timer interrupt uses the following formula
  * (16M/prescaler)/(desired frequency) = number of counts for CTC mode.
  * (16M/8)/(200) = CTC_MATCH = 10000
@@ -60,6 +63,7 @@ void readDirectionButtons();
 bool readClawButton();
 void openClaw();
 void closeClaw();
+void relaxClaw();
 
 void lightGreenLED();
 void lightRedLED();
@@ -149,8 +153,7 @@ int main () {
   while (1) { //main loop
     switch(game_state) { //game state machine
       case WAIT_FOR_START: //wait for the start button to be pressed
-        analogWrite(CLAW_MOTOR_PIN1,  0); //relax the claw
-        analogWrite(CLAW_MOTOR_PIN2, 0);
+        relaxClaw();
 
         lightRedLED();
 
@@ -178,6 +181,7 @@ int main () {
       case PLAY: //take input from touchpad or buttons
         if (touchpad_enabled) {
 
+          //analogRead is equivalent to ad0_conv();
           if (analogRead(STYLUS_PIN) > 0) { //check if stylus is touching
             gantry_coordinates = readTouchpad();
 
@@ -327,8 +331,7 @@ int main () {
         }
 
         //set everything to zero
-        analogWrite(CLAW_MOTOR_PIN1,  0);
-        analogWrite(CLAW_MOTOR_PIN2, 0);
+        relaxClaw();
         for (int i = 0; i < NUM_MOTORS; ++i) {
           motors[i].command_velocity = 0;
           motors[i].command_position = encoder_counts[i];
@@ -370,7 +373,7 @@ int main () {
 void setup() {
   noInterrupts();
 
-  //set motor pins and interrupts
+  //set motor pins and interrupts and limits
   //motor1
   motors[MOTOR_X].pwm_pin = MOTOR_X_PWM;
   motors[MOTOR_X].directionb = MOTOR_X_PIN1;
@@ -399,18 +402,23 @@ void setup() {
   motor_limits[MOTOR_WINCH].min = WINCH_MIN;
   motor_limits[MOTOR_WINCH].max = WINCH_MAX;
 
-  //set all the pins to outputs, and set PID things
+  //set PID constants
   for (int i = 0; i < NUM_MOTORS; ++i) {
-    pinMode(motors[i].pwm_pin, OUTPUT);
-    pinMode(motors[i].directionb, OUTPUT);
-    pinMode(motors[i].directiona, OUTPUT);
     motors[i].command_position = 0;
     setPIDConstants(motor_pid[i], KP, KI, KD, 1000);
   }
 
-  //claw pin
-  pinMode(CLAW_MOTOR_PIN1, OUTPUT);
-  pinMode(CLAW_MOTOR_PIN2, OUTPUT);
+
+  //set all PWM pins to output
+  DDRH |= 0x78;
+  DDRE |= 0x08;
+  DDRG |= 0x20;
+
+  //configure directional pins to output
+  DDRG |= 0x03;
+  DDRA |= 0x03;
+  DDRC |= 0x0C;
+  DDRB |= 0x0C;
 
   analogReference(DEFAULT);
   Serial.begin(9600);
@@ -446,8 +454,8 @@ void setup() {
   PORTH |= 0x01; //set internal pullup resistor
 
   //setup LED Pins
-  pinMode(GREEN_LED, OUTPUT);
-  pinMode(RED_LED, OUTPUT);
+  DDRC |= 0xC0;
+
   interrupts();
 }
 
@@ -460,7 +468,7 @@ coordinates_t readTouchpad() {
   coordinates_t gantry_coords;
 
   //read the four corners
-  a = analogRead(CORNER_0);
+  a = analogRead(CORNER_0); //equivalent of ad0_conv
   b = analogRead(CORNER_1);
   c = analogRead(CORNER_2);
   d = analogRead(CORNER_3);
@@ -532,14 +540,14 @@ void readDirectionButtons() {
 
 //sets Green LED port high and red low
 void lightGreenLED() {
-  digitalWrite(GREEN_LED, HIGH);
-  digitalWrite(RED_LED, LOW);
+  PORTC |= 0x80;
+  PORTC &= 0xBF;
 }
 
 //opposite of above
 void lightRedLED() {
-  digitalWrite(GREEN_LED, LOW);
-  digitalWrite(RED_LED, HIGH);
+  PORTC |= 0x40;
+  PORTC &= 0x7F;
 }
 
 //writes a PWM to one of the claw input lines
@@ -551,5 +559,10 @@ void openClaw() {
 //writes a PWM to the opposite line as above
 void closeClaw() {
   analogWrite(CLAW_MOTOR_PIN1,  255);
+  analogWrite(CLAW_MOTOR_PIN2, 0);
+}
+
+void relaxClaw() {
+  analogWrite(CLAW_MOTOR_PIN1,  0);
   analogWrite(CLAW_MOTOR_PIN2, 0);
 }

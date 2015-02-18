@@ -9,11 +9,6 @@
 #define CORNER_3 3
 #define STYLUS_PIN 4
 
-#define TOUCH_TOP -100
-#define TOUCH_BOTTOM 50
-#define TOUCH_LEFT 100
-#define TOUCH_RIGHT -50
-
 //#define PWM_REMOVAL
 #define MOTOR_SCALER -100
 #define X_VEL_SCALER 600
