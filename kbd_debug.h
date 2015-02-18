@@ -6,85 +6,84 @@ void readKeyboardDebug(bool &touchpad_enabled) {
   if (Serial.available()) {
     incoming_byte = Serial.read();
     switch(incoming_byte) {
-      case 'w':
+      case 'l': //move r motor on shelf towards
         motors[MOTOR_X].command_position += 200;
         break;
 
-      case 's':
+      case 'o': //move r motor on shelf away
         motors[MOTOR_X].command_position -= 200;
         break;
 
-      case 'a':
+      case 'i': //move l motor on shelf away
         motors[MOTOR_X2].command_position -= 200;
         break;
 
-      case 'q':
+      case 'k': //move l motor on shelf towards
         motors[MOTOR_X2].command_position += 200;
         break;
 
-      case 'r':
+      case 'R':
         game_state = WAIT_FOR_START;
         break;
 
-      case 'p':
+      case 'P':
         game_state = PLAY;
         break;
 
-      case 'y':
-        motors[MOTOR_X].command_velocity += 200;
-        motors[MOTOR_X2].command_velocity += 200;
+      case 'S': //set position and restart the game
+        game_state = WAIT_FOR_START;
+        for (int i = 0; i < NUM_MOTORS; ++i) {
+          motors[i].command_position = 0;
+          motors[i].command_velocity = 0;
+          encoder_counts[i] = 0;
+        }
         break;
 
-      case 'h':
-        motors[MOTOR_X].command_velocity += 200;
-        motors[MOTOR_X2].command_velocity += 200;
-        break;
-
-      case 'k':
+      case 's': //move system towards
         motors[MOTOR_X].command_velocity += 800;
         motors[MOTOR_X2].command_velocity += 800;
         break;
 
-      case 'i':
+      case 'w': //move system away
         motors[MOTOR_X].command_velocity -= 800;
         motors[MOTOR_X2].command_velocity -= 800;
         break;
 
-      case 'j':
+      case 'a': //move system left
         motors[MOTOR_Y].command_velocity -= 800;
         break;
 
-      case 'l':
+      case 'd': //move system right
         motors[MOTOR_Y].command_velocity += 800;
         break;
 
-      case '>':
+      case '<': //move cart left
         motors[MOTOR_Y].command_position -= 200;
         break;
 
-      case '<':
+      case '>': //move cart right
         motors[MOTOR_Y].command_position += 200;
         break;
 
-      case 'D':
+      case 'j': //release claw
         motors[MOTOR_WINCH].command_velocity += 3200;
         break;
 
-      case 'U':
+      case 'u': //reel in claw
         motors[MOTOR_WINCH].command_velocity -= 3200;
         break;
 
-      case 'C':
+      case 'h': //close claw
         analogWrite(CLAW_MOTOR_PIN1, 255);
         analogWrite(CLAW_MOTOR_PIN2,  0);
         break;
 
-      case 'O':
+      case 'y': //open claw
         analogWrite(CLAW_MOTOR_PIN2, 255);
         analogWrite(CLAW_MOTOR_PIN1,  0);
         break;
 
-      case ' ':
+      case ' ': //reset encoder data
         for (int i = 0; i < NUM_MOTORS; ++i) {
           motors[i].command_position = 0;
           motors[i].command_velocity = 0;
@@ -103,7 +102,7 @@ void readKeyboardDebug(bool &touchpad_enabled) {
         touchpad_enabled = !touchpad_enabled;
         break;
 
-      case 'T':
+      case 'r': //relax claw
         analogWrite(CLAW_MOTOR_PIN2, 0);
         analogWrite(CLAW_MOTOR_PIN1, 0);
         break;
@@ -116,29 +115,29 @@ void readKeyboardInput() {
   if (Serial.available()) {
     incoming_byte = Serial.read();
     switch(incoming_byte) {
-      case 'i':
+      case 'w':
         motors[MOTOR_X].command_velocity -= 800;
         motors[MOTOR_X2].command_velocity -= 800;
         break;
 
-      case 'k':
+      case 's':
         motors[MOTOR_X].command_velocity += 800;
         motors[MOTOR_X2].command_velocity += 800;
         break;
 
-      case 'j':
+      case 'a':
         motors[MOTOR_Y].command_velocity -= 800;
         break;
 
-      case 'l':
+      case 'd':
         motors[MOTOR_Y].command_velocity += 800;
         break;
 
-      case 'w':
+      case 'u':
         motors[MOTOR_WINCH].command_velocity += 3200;
         break;
 
-      case 's':
+      case 'j':
         motors[MOTOR_WINCH].command_velocity -= 3200;
         break;
 
