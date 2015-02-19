@@ -68,14 +68,20 @@
 #define MAX_Y_SPEED 1600 //ticks/s
 
 #define WINCH_MIN 0
-#define WINCH_MAX 20000
+#define WINCH_MAX 17500
 
 #define POS_TOLERANCE 300 //position tolerance "must be within 100 ticks of x"
 #define SQUARE_X 7000 //x position of square
 #define SQUARE_Y 200 //Y position of square
 #define WINCH_END 2000
+#define WINCH_BOTTOM 15000 //tolerance since motors can't get to exactly
+                           //WINCH_MAX
 
 #define NUM_SAMPLES 5 //number of samples for touchpad moving avg
+
+#define CART_STOP 44
+#define SHELF_STOP_L 47
+#define SHELF_STOP_R 46
 
 #define FILTER_VELOCITY
 #define VELOCITY_SAMPLES 10

@@ -27,7 +27,7 @@ void readKeyboardDebug(bool &touchpad_enabled) {
         break;
 
       case 'P':
-        game_state = PLAY;
+        game_state = INIT;
         break;
 
       case 'S': //set position and restart the game

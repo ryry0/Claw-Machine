@@ -174,6 +174,9 @@ int main () {
           motors[i].command_velocity = 0;
 
         lightGreenLED();
+
+        Serial.print("PLAY GAME\n");
+
         game_state = PLAY;
         break; //end INIT
 
@@ -227,8 +230,6 @@ int main () {
         }
 
         readKeyboardInput();
-        Serial.print(encoder_counts[MOTOR_WINCH]); //debug info
-        Serial.print("\n");
 
         if (readClawButton())
           game_state = RETRIEVE_PRIZE;
@@ -245,16 +246,21 @@ int main () {
         //open the claw
         openClaw();
 
-        motors[MOTOR_WINCH].command_velocity = 3200; //drop claw
+        motors[MOTOR_WINCH].command_position = WINCH_MAX; //drop claw
 
         //spin and wait till we get to bottom
-        while( (abs(encoder_counts[MOTOR_WINCH] - WINCH_MAX) > 100) );
+        while(encoder_counts[MOTOR_WINCH] < WINCH_BOTTOM) {
+          //Serial.print(motors[MOTOR_WINCH].encoder_value);
+        }
 
+        delay(1500);
         //close the claw
         closeClaw();
 
-        motors[MOTOR_WINCH].command_velocity = -3200; //reel claw
+        motors[MOTOR_WINCH].command_position = WINCH_MIN; //reel claw
 
+        //spin and wait till we get back to top
+        while (encoder_counts[MOTOR_WINCH] > WINCH_END);
 
         //go over hole
         motors[MOTOR_X].command_velocity = 800;
@@ -266,9 +272,8 @@ int main () {
 
         //while ( x and x2 != xmax or y != y_max or winch != winch_min)
         while( ((encoder_counts[MOTOR_X] < SQUARE_X)  &&
-              (encoder_counts[MOTOR_X2]    < SQUARE_X)) ||
-            (encoder_counts[MOTOR_Y]     > SQUARE_Y)  ||
-            (encoder_counts[MOTOR_WINCH] > WINCH_END) ) {
+              (encoder_counts[MOTOR_X2] < SQUARE_X)) ||
+            (encoder_counts[MOTOR_Y]  > SQUARE_Y)) {
 
           //shut off the motors when needed
           if ((encoder_counts[MOTOR_X] > SQUARE_X) &&
@@ -280,17 +285,6 @@ int main () {
           if (encoder_counts[MOTOR_Y] < SQUARE_Y) {
             motors[MOTOR_Y].command_velocity = 0;
           }
-
-          if (encoder_counts[MOTOR_WINCH] < WINCH_END) {
-            motors[MOTOR_WINCH].command_velocity = 0;
-          }
-
-          for (int i = 0; i < NUM_MOTORS; ++i) {
-            Serial.print(encoder_counts[i]);
-            Serial.print(" ");
-          }
-
-          Serial.print("\n");
         } //end while spin
 
         //open the claw
@@ -310,7 +304,7 @@ int main () {
         //spin till we get there
         //while ( x and x2 > x_min or y > y_min )
         while((encoder_counts[MOTOR_X] > X_MIN + POS_TOLERANCE) ||
-              (encoder_counts[MOTOR_Y] > Y_MIN + POS_TOLERANCE)) {
+            (encoder_counts[MOTOR_Y] > Y_MIN + POS_TOLERANCE)) {
 
           //shut off motors when needed
           if(!(encoder_counts[MOTOR_X] > X_MIN + POS_TOLERANCE)) {
@@ -342,17 +336,19 @@ int main () {
         //////////DEBUG/////////////////////////////
       case DEBUG: //for debugging purposes, removes software limiters
         readKeyboardDebug(touchpad_enabled);
-        gantry_coordinates = readTouchpad();
+        Serial.print("DEBUG : W: ");
+        Serial.print(encoder_counts[MOTOR_WINCH]);
+        Serial.print(" X: ");
+        Serial.print(encoder_counts[MOTOR_X]);
+        Serial.print(" Y: ");
+        Serial.print(encoder_counts[MOTOR_Y]);
 
-        if (analogRead(STYLUS_PIN) > 0)
-          Serial.print("Contact ");
-        else
-          Serial.print("No Contact ");
-
-        Serial.print("x: ");
-        Serial.print(gantry_coordinates.x);
-        Serial.print(" y: ");
-        Serial.print(gantry_coordinates.y);
+        Serial.print(" S1: ");
+        Serial.print(digitalRead(CART_STOP));
+        Serial.print(" S2: ");
+        Serial.print(digitalRead(SHELF_STOP_L));
+        Serial.print(" S3: ");
+        Serial.print(digitalRead(SHELF_STOP_R));
         Serial.print("\n");
         break; // END DEBUG
 
@@ -419,6 +415,16 @@ void setup() {
   DDRA |= 0x03;
   DDRC |= 0x0C;
   DDRB |= 0x0C;
+
+  //configure hardware stops
+  pinMode(CART_STOP, INPUT);
+  pinMode(SHELF_STOP_L, INPUT);
+  pinMode(SHELF_STOP_R, INPUT);
+
+  //turn on internal pullup resistors
+  digitalWrite(CART_STOP, HIGH);
+  digitalWrite(SHELF_STOP_L, HIGH);
+  digitalWrite(SHELF_STOP_R, HIGH);
 
   analogReference(DEFAULT);
   Serial.begin(9600);
